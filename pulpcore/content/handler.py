@@ -18,7 +18,6 @@ from pulpcore.app.models import (
     ContentArtifact,
     Remote,
     RemoteArtifact,
-    RepositoryVersion,
 )
 
 
@@ -266,7 +265,7 @@ class Handler:
 
         if repository or repo_version:
             if repository:
-                repo_version = RepositoryVersion.latest(distro.repository)
+                repo_version = distro.repository.latest_version()
 
             try:
                 ca = ContentArtifact.objects.get(
