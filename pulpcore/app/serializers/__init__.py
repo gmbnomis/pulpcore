@@ -24,6 +24,9 @@ from .fields import (  # noqa
     LatestVersionField,
     SecretCharField,
     SingleContentArtifactField,
+    RepositoryVersionsIdentityFromRepositoryField,
+    RepositoryVersionRelatedField,
+    RepositoryVersionIdentityField,
     relative_path_validator,
 )
 from .progress import ProgressReportSerializer  # noqa
