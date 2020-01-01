@@ -7,7 +7,7 @@ from os import path
 import logging
 
 import django
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.urls import reverse
 
 from pulpcore.app.util import batch_qs, get_view_name_for_model
@@ -530,7 +530,11 @@ class RepositoryVersion(BaseModel):
                 )
             )
 
-        RepositoryContent.objects.bulk_create(repo_content)
+        try:
+            RepositoryContent.objects.bulk_create(repo_content)
+        except IntegrityError:
+            self._normalize_repository_content()
+            RepositoryContent.objects.bulk_create(repo_content)
 
     def remove_content(self, content):
         """
@@ -554,7 +558,11 @@ class RepositoryVersion(BaseModel):
             repository=self.repository,
             content_id__in=content,
             version_removed=None)
-        q_set.update(version_removed=self)
+        try:
+            q_set.update(version_removed=self)
+        except IntegrityError:
+            self._normalize_repository_content()
+            q_set.update(version_removed=self)
 
     def next(self):
         """
@@ -678,6 +686,42 @@ class RepositoryVersion(BaseModel):
                     counts_list.append(count_obj)
             RepositoryVersionContentDetails.objects.bulk_create(counts_list)
 
+    def _normalize_repository_content(self, batch_size=2000):
+        """
+        Normalize RepositoryContent records
+
+        When a content unit is added and deleted (or delete and re-added) in the
+        same repository version, superfluous RepositoryContent records will be created
+        that will show up in the added/removed sets. This method normalizes the
+        RepositoryContent to avoid these artifacts.
+        """
+        # Remove any records which were added and then removed in this version
+        RepositoryContent.objects.filter(
+            repository=self.repository,
+            version_added=self,
+            version_removed=self
+        ).delete()
+        # Regularize any records that were removed and then re-added in this version
+        while True:
+            readded_content = list(  # force evaluation of the QS, we need a stable list of pks
+                self.removed().filter(pk__in=self.added()).values_list('pk', flat=True)[:batch_size]
+            )
+            if readded_content:
+                with transaction.atomic():
+                    RepositoryContent.objects.filter(
+                        content__in=readded_content,
+                        repository=self.repository,
+                        version_added=self,
+                        version_removed=None
+                    ).delete()
+                    RepositoryContent.objects.filter(
+                        content__in=readded_content,
+                        repository=self.repository,
+                        version_removed=self
+                    ).update(version_removed=None)
+            if len(readded_content) < batch_size:
+                break
+
     def __enter__(self):
         """
         Create the repository version
@@ -695,8 +739,11 @@ class RepositoryVersion(BaseModel):
             self.delete()
         else:
             try:
+                self._normalize_repository_content()
                 repository = self.repository.cast()
                 repository.finalize_new_version(self)
+                # Finalization may have changed content => normalize again:
+                self._normalize_repository_content()
                 no_change = not self.added() and not self.removed()
                 if no_change:
                     self.delete()
